@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+.DS_Store
+Thumbs.db
+*.log
+*.err
+vuex_raw.json
+detail_data.json
+sales_history.json
+ysb_images/
+*.xlsx
+*.html
