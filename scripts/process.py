@@ -11,6 +11,7 @@
 #   python process.py --brand 妇炎洁 --input vuex_raw.json --detail detail_data.json
 import json, base64, re, os, datetime, urllib.request, sys, io, argparse, time
 import openpyxl
+import ysb_parser
 
 _RUN_START = time.time()  # 记录 process.py 启动时间，用于计算运行耗时
 from openpyxl.styles import Font, Alignment, PatternFill
@@ -57,15 +58,10 @@ if _last_cfg:
     print("[grow] 上次配置: brand=%s, pages=%s" % (_last_brand or "—", _lp))
 # 通用品牌/前缀剥离正则（用于规格去重与系列归并，去掉品牌名、包邮、®™ 等）
 BRAND_RE = re.compile(r'包邮|云闪付专享|®|™|' + re.escape(BRAND))
-# 商品详情页链接（wholesaleid = 商品链接 id）
-# 拼团商品(包邮): isAssemble=true, scene=0
-# 普通商品(起购): isAssemble=false, scene=1
-PRODUCT_URL_GROUP = "https://dian.ysbang.cn/#/drugInfo?wholesaleid=%s&isAssemble=true&scene=0&trafficType=1"
-PRODUCT_URL_REGULAR = "https://dian.ysbang.cn/#/drugInfo?wholesaleid=%s&isAssemble=false&scene=1&trafficType=1"
-
-def is_group_buy_name(name):
-    """根据商品名判断是否为拼团商品（包邮）"""
-    return '包邮' in (name or '')
+# 商品详情页链接、商品类型判断 — 统一引用 ysb_parser 公共模块
+PRODUCT_URL_GROUP = ysb_parser.PRODUCT_URL_GROUP
+PRODUCT_URL_REGULAR = ysb_parser.PRODUCT_URL_REGULAR
+is_group_buy_name = ysb_parser.is_group_buy_name
 # =================================================
 
 raw = json.load(open(INPUT_JSON, encoding="utf-8-sig"))
@@ -87,25 +83,9 @@ if len(_deduped) < len(raw):
 raw = _deduped
 
 
-def decode_price(tok):
-    if not tok:
-        return None
-    try:
-        b = base64.b64decode(tok)
-    except Exception:
-        return None
-    for marker in (b'\x12', b'\x3a'):
-        i = b.find(marker)
-        while i != -1:
-            if i + 1 < len(b):
-                L = b[i + 1]
-                if 1 <= L <= 12:
-                    s = b[i + 2: i + 2 + L]
-                    if re.match(rb'^\d+\.\d{1,2}$', s) or re.match(rb'^\d+$', s):
-                        return s.decode('latin-1')
-            i = b.find(marker, i + 1)
-    m = re.search(rb'\d+\.\d{2}', b)
-    return m.group(0).decode('latin-1') if m else None
+# 价格解码、销量解析 — 统一引用 ysb_parser 公共模块
+decode_price = ysb_parser.decode_price
+parse_sales = ysb_parser.parse_sales
 
 
 def window(dom, name):
@@ -117,18 +97,6 @@ def window(dom, name):
     if p == -1:
         return dom[:500]
     return dom[max(0, p - 250): p + len(name) + 420]
-
-
-def parse_sales(dom):
-    if not dom:
-        return 0
-    m = re.search(r'已拼\s*([\d.]+)\s*万?\+?', dom)
-    if not m:
-        return 0
-    num = float(m.group(1))
-    if '万' in m.group(0):
-        num *= 10000
-    return int(num)
 
 
 def parse_expiry(dom):
@@ -594,11 +562,12 @@ for s in product_list:
     })
 # 排名：按权威销量降序（列表兜底）
 products_out.sort(key=lambda p: (p["sales"] or 0), reverse=True)
+# HTML 图片直接用原始 URL，无需下载（浏览器在线加载，onerror 自动隐藏失效图）
+# Excel 图片仍需下载（openpyxl 要求本地文件路径）
 for i, p in enumerate(products_out, 1):
     p["id"] = i
     p["rank"] = i
-    ip = dl(p["repImg"], "%s/%s.jpg" % (IMG_DIR, p["repWid"])) if p["repWid"] else ""
-    p["img"] = ip or ""
+    p["img"] = p.get("repImg") or ""
 
 HTML = r"""<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>__BRAND__ 热销采购分析</title>
@@ -786,9 +755,9 @@ try:
     _total_wids = len(set(str(r.get("wholesaleid")) for r in listings if r.get("wholesaleid")))
     _detail_ok = 0
     _detail_pending = 0
-    if detail_data:
+    if detail_map:
         for _wid in (str(r.get("wholesaleid")) for r in listings if r.get("wholesaleid")):
-            _dd = detail_data.get(_wid)
+            _dd = detail_map.get(_wid)
             if _dd and _dd.get("paid_units") is not None:
                 _detail_ok += 1
             else:
@@ -815,7 +784,7 @@ try:
             "brand": BRAND,
             "pages": None,  # extract.py 的参数，这里无法直接获取
             "input": os.path.basename(INPUT_JSON),
-            "has_detail": bool(detail_data),
+            "has_detail": bool(detail_map),
         },
     }
 

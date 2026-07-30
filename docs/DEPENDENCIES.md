@@ -84,20 +84,30 @@ pip install browser-use
 ## 依赖与脚本对应关系
 
 ```
+run.py ────────────────────└── (标准库: json, os, sys, argparse, subprocess, urllib.request)
+
 auto_login.py ────────────┬── websocket-client
                           ├── Pillow
                           ├── numpy
                           └── ysb_common.py (→ websocket-client, Pillow, numpy, ddddocr, ctypes)
 
-extract.py ───────────────┬── browser-use
+cdp_extract.py ───────────┬── websocket-client
+                          ├── ysb_common.py (→ 同上)
+                          ├── ysb_parser.py (→ 标准库: json, re, base64, time)
+                          └── (标准库: json, time, sys, argparse)
+
+extract.py ───────────────┬── browser-use (可选)
+                          ├── ysb_parser.py (→ 标准库)
                           └── (标准库: json, re, time, urllib)
 
 cdp_fetch_detail_v2.py ───┬── websocket-client
                           ├── ysb_common.py (→ 同上)
+                          ├── ysb_parser.py (→ 标准库)
                           └── (标准库: json, base64, re, time, datetime, sys, argparse, os)
 
 process.py ───────────────┬── openpyxl
                           ├── Pillow
+                          ├── ysb_parser.py (→ 标准库)
                           └── (标准库: json, re, io, os, datetime, argparse)
 
 grow.py ──────────────────└── (标准库: json, sys, argparse, datetime, os)
@@ -124,10 +134,12 @@ grow.py ──────────────────└── (标准�
 
 | 场景 | 推荐脚本 | 依赖 |
 |------|----------|------|
-| 列表采集 | `extract.py` | browser-use |
-| 详情页采集 (Python ≥ 3.11) | `fetch_detail.py` | browser-use |
-| 详情页采集 (Python 3.10) | `cdp_fetch_detail_v2.py` | websocket-client (推荐) |
+| 列表采集 (Python 3.10+) | `cdp_extract.py` | websocket-client (推荐) |
+| 列表采集 (Python ≥3.11) | `extract.py` | browser-use (备选) |
+| 详情页采集 (Python 3.10+) | `cdp_fetch_detail_v2.py` | websocket-client (推荐) |
+| 详情页采集 (Python ≥3.11) | `fetch_detail.py` | browser-use (备选) |
 | 自动登录 | `auto_login.py` | websocket-client, Pillow, numpy |
+| 一键全流程 | `run.py` | 无额外依赖（调用上述脚本） |
 
 ---
 
@@ -143,7 +155,7 @@ deps = {
     'PIL': 'Pillow',
     'numpy': 'numpy',
     'openpyxl': 'openpyxl',
-    'ddddocr': 'ddddocr (可选)',
+    'ddddocr': 'ddddocr',
 }
 for mod, name in deps.items():
     try:
@@ -154,9 +166,9 @@ for mod, name in deps.items():
 
 try:
     import browser_use
-    print('[OK] browser-use')
+    print('[OK] browser-use (可选，CDP直连模式不需要)')
 except ImportError:
-    print('[MISSING] browser-use (列表采集需要)')
+    print('[INFO] browser-use 未安装 — 将使用 CDP 直连模式（推荐）')
 "
 ```
 

@@ -8,6 +8,7 @@
     pip install websocket-client Pillow numpy
 """
 import json, time, sys, io, urllib.request, websocket
+import ysb_parser
 
 CDP_URL = "http://127.0.0.1:9222"
 
@@ -79,17 +80,31 @@ def find_tab():
 _global_mid = [0]
 
 
-def cdp_send(ws, method, params=None):
+def cdp_send(ws, method, params=None, timeout=30):
+    """发送 CDP 命令并等待匹配响应。
+    超时保护：超过 timeout 秒未收到匹配响应则抛出 TimeoutError，
+    防止 WebSocket 连接断开导致脚本永久阻塞。
+    """
     _global_mid[0] += 1
     msg_id = _global_mid[0]
     msg = {"id": msg_id, "method": method}
     if params:
         msg["params"] = params
     ws.send(json.dumps(msg))
-    while True:
-        resp = json.loads(ws.recv())
-        if resp.get("id") == msg_id:
-            return resp
+    deadline = time.time() + timeout
+    _old_timeout = ws.gettimeout()
+    ws.settimeout(5)  # 每次 recv 最多等 5 秒，避免无限阻塞
+    try:
+        while time.time() < deadline:
+            try:
+                resp = json.loads(ws.recv())
+                if resp.get("id") == msg_id:
+                    return resp
+            except websocket.WebSocketTimeoutException:
+                continue
+    finally:
+        ws.settimeout(_old_timeout)
+    raise TimeoutError("CDP 超时: %s 等待 %ds 未响应" % (method, timeout))
 
 
 def cdp_eval(ws, expression):
@@ -241,49 +256,8 @@ def get_slider_info(ws):
 
 
 # ====================== 验证弹窗检测 ======================
-VERIFY_JS = r"""(() => {
-    const yidunSels = ['.yidun_slider', '.yidun_control', '.yidun_panel',
-                       '.yidun_bg-img', '.yidun_jigsaw', '.yidun_modal'];
-    for (const s of yidunSels) {
-        const el = document.querySelector(s);
-        if (el) {
-            const cs = window.getComputedStyle(el);
-            if (cs.display !== 'none' && cs.visibility !== 'hidden' && cs.opacity !== '0') {
-                const r = el.getBoundingClientRect();
-                if (r.width > 5 || r.height > 5)
-                    return JSON.stringify({type:'yidun_slider', hit:s});
-            }
-        }
-    }
-    const direct = ['.nc_iconfont','.nc_wrapper','.geetest_slider_button',
-        '.geetest_widget','.geetest_panel','.gt_slider_knob',
-        'iframe[src*="captcha"]','iframe[src*="verify"]','iframe[src*="tcaptcha"]',
-        '.captcha-container','.verify-container','.slider-verify'];
-    for (const s of direct) {
-        const el = document.querySelector(s);
-        if (el) {
-            const cs = window.getComputedStyle(el);
-            if (cs.display !== 'none' && cs.visibility !== 'hidden')
-                return JSON.stringify({type:'captcha', hit:s});
-        }
-    }
-    const kws = ['拖动滑块','完成验证','请完成下方验证','安全验证','操作过于频繁',
-                 '请验证身份','滑动验证','人机验证','请拖动','请按住滑块','验证失败','请重新验证'];
-    const overlays = document.querySelectorAll(
-        '.modal,.dialog,.popup,.mask,.overlay,.toast,' +
-        '[class*="modal"],[class*="dialog"],[class*="popup"],' +
-        '[class*="verify"],[class*="captcha"],[class*="slider"]');
-    for (const o of overlays) {
-        const cs = window.getComputedStyle(o);
-        if (cs.display === 'none' || cs.visibility === 'hidden') continue;
-        const r = o.getBoundingClientRect();
-        if (r.width < 5 && r.height < 5) continue;
-        const t = o.innerText || '';
-        if (!t || t.length > 500) continue;
-        for (const k of kws) { if (t.indexOf(k) !== -1) return JSON.stringify({type:'modal', hit:k}); }
-    }
-    return JSON.stringify({type:null, hit:''});
-})()"""
+# VERIFY_JS 统一由 ysb_parser.py 公共模块提供，避免多处重复维护
+VERIFY_JS = ysb_parser.VERIFY_JS
 
 
 def check_verify(ws):

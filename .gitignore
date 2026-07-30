@@ -14,3 +14,5 @@ sales_history.json
 ysb_images/
 *.xlsx
 *.html
+detail_existing.json
+profile.json

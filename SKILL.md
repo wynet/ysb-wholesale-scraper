@@ -23,8 +23,8 @@ AI agent 收到请求后，依次检查以下条件，缺少时自动处理或�
 
 1. **Chrome 9222 调试会话** — 若不可用，提示用户启动：
    `chrome.exe --remote-debugging-port=9222 --remote-allow-origins=* --user-data-dir=持久目录 --no-first-run`
-2. **Python 依赖** — AI agent 自动检测并安装：`browser-use`、`openpyxl`、`websocket-client`、`Pillow`、`numpy`
-3. **登录态** — 若未登录或已过期，AI agent 自动运行 `auto_login.py`（需用户提供手机号+密码）
+2. **Python 依赖** — AI agent 自动检测并安装：`openpyxl`、`websocket-client`、`Pillow`、`numpy`、`ddddocr`（`browser-use` 仅在 Python ≥3.11 时可选，CDP 直连模式无需它）
+3. **登录态** — 若未登录或已过期，AI agent 自动运行 `auto_login.py`（需用户提供手机号+密码，首次提供后自动保存到 `profile.json`，后续无需再传）
 
 ## 关键反爬事实（务必先读）
 价格有**两层**保护，详情见 `references/decryption.md`：
@@ -33,7 +33,67 @@ AI agent 收到请求后，依次检查以下条件，缺少时自动处理或�
 
 采集与解析的 Vuex 结构、字段含义、以及最严重的「推荐商品串号」陷阱，见 `references/vuex_schema.md`。
 
+## 模块架构
+
+```
+scripts/
+├── run.py                  # 一键全流程编排（推荐入口）
+├── auto_login.py           # 自动登录 + 滑块验证
+├── cdp_extract.py          # CDP 直连列表采集（推荐，不依赖 browser-use）
+├── extract.py              # browser-use 版列表采集（备选，需 Python ≥3.11）
+├── cdp_fetch_detail_v2.py  # CDP 直连详情页采集（推荐，集成 ddddocr）
+├── fetch_detail.py         # browser-use 版详情页采集（备选）
+├── process.py              # 解析 + 去重 + 出表（Excel + HTML）
+├── grow.py                 # 成长报告查看
+├── ysb_common.py           # 公共模块：CDP 通信、滑块验证、窗口激活
+└── ysb_parser.py           # 公共模块：价格解码、销量解析、验证检测、JS 模板
+```
+
+**公共模块说明**：
+- `ysb_common.py`：CDP 基础操作（`cdp_send` 带超时保护、`cdp_eval`、`find_tab`）、Windows 窗口激活、缺口识别（numpy 梯度分析）、轨迹模拟、验证弹窗检测与处理（含断线重连）。
+- `ysb_parser.py`：价格解码（`decode_price`）、销量解析（`parse_sales`）、验证检测（`check_verify`/`handle_verify_browser`）、商品类型判断（`is_group_buy_name`）、商品详情链接常量（`PRODUCT_URL_GROUP`/`PRODUCT_URL_REGULAR`）、JS 模板（`VERIFY_JS`/`SOLVE_SLIDER_JS`）。所有解析逻辑集中在此，`extract.py`、`process.py`、`cdp_extract.py` 统一调用。
+
 ## AI agent 执行流程
+
+### 推荐方式：一键全流程（脚本：`scripts/run.py`）
+
+> **AI agent 默认使用此方式**，无需手动执行多条命令，一条命令完成全流程。
+
+`run.py` 自动串联：Chrome 检测 → 登录检测/自动登录 → 列表采集 → 详情采集 → 出表。
+自动检测 browser-use 可用性（不可用时回退到 CDP 直连模式），自动管理中间文件。
+
+**AI 执行方式**：
+```bash
+python scripts/run.py --brand <品牌名> --pages <页数> --top-n <详情数> --phone <手机号> --password <密码>
+```
+
+参数：
+| 参数 | 默认 | 说明 |
+|---|---|---|
+| `--brand` | （必填） | 品牌名/搜索关键词 |
+| `--pages` | 1 | 列表采集页数（每页约 60 条） |
+| `--top-n` | 0 | 详情页采集数（0=全量，测试时建议用 10） |
+| `--phone` | （从 profile.json 读取） | 登录手机号（首次需提供，之后自动记忆） |
+| `--password` | （从 profile.json 读取） | 登录密码（首次需提供，之后自动记忆） |
+| `--skip-login` | false | 跳过登录检测（确认已登录时用） |
+
+**执行示例**：
+```bash
+# 首次运行（需提供凭证，之后自动保存）
+python scripts/run.py --brand 合生元 --pages 1 --top-n 10 --phone 18900000000 --password xxx
+
+# 后续运行（凭证已保存，无需再传）
+python scripts/run.py --brand 合生元 --pages 3 --top-n 0
+
+# 跳过登录检测
+python scripts/run.py --brand 云南白药 --pages 2 --top-n 20 --skip-login
+```
+
+**输出**：最终产物（xlsx + html）直接输出到当前工作目录，中间文件（`vuex_raw.json`、`detail_data.json`）也保留在当前目录供断点续传。
+
+---
+
+以下为各步骤的单独说明（`run.py` 内部自动调用，也可单独执行用于调试或补采）：
 
 ### 步骤 0 — 自动登录 + 滑块验证（脚本：`scripts/auto_login.py`）
 若 Chrome 9222 会话**未登录**或登录已过期，AI agent 自动运行此脚本完成登录+网易易盾滑块验证。
@@ -49,13 +109,42 @@ python scripts/auto_login.py <手机号> <密码>
 - 若已登录则直接退出（不重复登录）。
 - **滑块验证原理**：网易易盾拼图验证码——`cdp_fetch_detail_v2.py` 用 `ddddocr.slide_match()` 精准识别缺口（推荐）；`auto_login.py` 用 numpy 分析每列像素梯度找到缺口边缘（成对峰值，间距≈拼图块宽度），缩放到显示尺寸后计算拖拽距离。
 - **人类轨迹模拟**：先慢速靠近滑块→按下→ease-out 拖拽（先快后慢，25+步）→y轴微小抖动→终点回弹→释放。
-- **公共模块**：滑块验证逻辑统一封装在 `scripts/ysb_common.py`，被 `auto_login.py` 和 `cdp_fetch_detail_v2.py` 共同调用。包含 CDP 基础操作、Windows 窗口激活（解决 hidden 标签页坐标为 0）、缺口识别、轨迹模拟、验证弹窗检测与处理（含断线重连）。修改滑块逻辑只需更新一处。
+- **公共模块**：滑块验证逻辑统一封装在 `scripts/ysb_common.py`，被 `auto_login.py` 和 `cdp_fetch_detail_v2.py` 共同调用。包含 CDP 基础操作（`cdp_send` 带超时保护，防止 WebSocket 断开导致永久阻塞）、Windows 窗口激活（解决 hidden 标签页坐标为 0）、缺口识别、轨迹模拟、验证弹窗检测与处理（含断线重连）。修改滑块逻辑只需更新一处。
+- **安全改进**：密码注入使用 `json.dumps()` 序列化转义，防止单引号/反斜杠导致 JS 语法错误；登录后增加 Vue Router 就绪检测，确保页面完全跳转后才判定登录成功。
 - **依赖**：`websocket-client`（CDP 通信）、`Pillow`+`numpy`（图像分析）、`ddddocr`（可选，备用缺口识别）。
 - **注意**：滑块验证可能因图片质量或策略更新偶尔失败。自动验证最多重试 6 次，失败后转人工等待（120 秒超时）。
 
-### 步骤 1 — 列表采集（脚本：`scripts/extract.py`）
+### 步骤 1 — 列表采集
+
+有两种方式，`run.py` 自动选择（优先 CDP 直连）：
+
+#### 步骤 1a — CDP 直连列表采集（推荐，脚本：`scripts/cdp_extract.py`）
+
+> **推荐方案**：不依赖 browser-use，纯 `websocket-client` 直连 Chrome 9222，兼容 Python 3.10+。
+
+`extract.py` 依赖 browser-use（需 Python ≥3.11），在 Python 3.10 环境下不可用。
+`cdp_extract.py` 是等价替代，用 CDP 直连读取 Vuex store，功能完全一致。
+
+**AI 执行方式**（普通 python，不走 browser-use 沙箱）：
+```bash
+python scripts/cdp_extract.py --brand <品牌名> --pages <页数> > vuex_raw.json 2> extract.err.log
+```
+
+参数：
+| 参数 | 默认 | 说明 |
+|---|---|---|
+| `--brand` | 云南白药 | 品牌名/搜索关键词 |
+| `--pages` | 1 | 抓取页数（每页约 60 条） |
+| `--sort-by-sales` | true | 是否按销量排序 |
+
+脚本特性与 `extract.py` 一致：翻页靠点「下一页」按钮；列表稳定后才读；每页检测登录失效 + 验证弹窗（调用 `ysb_parser.handle_verify_browser` 自动解决滑块，失败等人工）。
+
+#### 步骤 1b — browser-use 版列表采集（备选，脚本：`scripts/extract.py`）
+
 该脚本在 **browser-use 沙箱**内执行，连接已登录的 9222 Chrome，逐页读取 Vuex
 store 并**按商品名精确匹配**各自卡片文本，把全部商品 JSON 打到 stdout。
+
+> 仅在 Python ≥3.11 且 browser-use 可用时使用。`run.py` 会自动检测并回退到 CDP 模式。
 
 **AI 执行方式**（browser-use CLI 只接 stdin，不接文件参数）：
 ```bash
@@ -85,6 +174,7 @@ AI agent 用**普通 python**（非 browser-use）运行，从 `vuex_raw.json` �
 - 按商品规格去重，再按「产品系列」归并不同规格；
 - 生成三表 Excel（热销系列 / TOP10 最低价 3 档位 / 产品明细）并嵌入图片；
 - 同时产出 HTML 报告，并把当日 TOP10 快照追加进 `sales_history.json`（用于拼趋势）。
+- **图片处理优化**：HTML 报告直接用原始图片 URL（浏览器在线加载，`onerror` 自动隐藏失效图），不下载；Excel 报告仍需下载本地图片（openpyxl 限制），但使用内存内压缩（`PIL.Image.open(io.BytesIO(data))`）避免临时文件。
 
 **AI 执行方式**：
 ```bash
@@ -104,7 +194,9 @@ python scripts/process.py --brand <品牌名> --input vuex_raw.json --detail det
 | `--output-xlsx` | `<BRAND>_热销统计_系列合并_<日期>.xlsx` | 显式指定 |
 | `--output-html` | `<BRAND>_热销采购分析_<日期>.html` | 显式指定 |
 
-### 步骤 2.5 — 详情页权威销量（脚本：`scripts/fetch_detail.py`）
+### 步骤 2.5 — 详情页权威销量（browser-use 版，脚本：`scripts/fetch_detail.py`）
+
+> **备选方案**：依赖 browser-use（需 Python ≥3.11）。`run.py` 默认使用步骤 2.7 的 CDP 直连版。
 步骤 1 的搜索列表「已拼」销量粗糙且易重复累计，**不可作权威销量**。商品详情页
 `#/drugInfo?wholesaleid=X` 含更精准的深层销量。本脚本用 browser-use 脚本化模式
 （`js()` 直跑页面 JS，不依赖 LLM）逐一点开全部代表报价的详情页（默认全量，见下方「取数范围」），正则抽取：
@@ -150,7 +242,7 @@ PY
 - `process.py` 读 `detail_data.json`：用「已付款件数」作**权威销量主指标**（不同报价单位盒/瓶不可相加，排名取代表报价单一值），并在 HTML 档位页顶部展示「销量分布」小结（最高/平均已付款件数、店铺总数）。
 
 ### 步骤 2.7 — CDP 直连详情页采集 v2（脚本：`scripts/cdp_fetch_detail_v2.py`）
-> **推荐方案**：不依赖 browser-use，直连 Chrome 9222 WebSocket，兼容 Python 3.10+。
+> **推荐方案**：`run.py` 默认使用此脚本。不依赖 browser-use，直连 Chrome 9222 WebSocket，兼容 Python 3.10+。
 
 `fetch_detail.py` 依赖 browser-use（需 Python ≥3.11），在 Python 3.10 环境下不可用。
 `cdp_fetch_detail_v2.py` 是等价替代，用 `websocket-client` 直连 CDP，并集成了 **ddddocr** 滑块识别。
@@ -187,6 +279,7 @@ python scripts/cdp_fetch_detail_v2.py \
 browser-use 沙箱进程写出的文件**在真实工作区不可见**（看似成功实则丢失）。
 **解决：采集脚本只把 JSON 打到 stdout，由普通 python 进程负责写 xlsx / 图片 / html。**
 切勿在 extract.py 内直接 `open().write()` 产物。
+> **`run.py` 已自动处理此问题**：它用 `subprocess` 捕获 stdout 后由主进程写入文件，不依赖 shell 重定向（避免 PowerShell 编码问题）。仅在单独执行 browser-use 版脚本时需注意此限制。
 
 ## 文件交付
 

@@ -21,8 +21,19 @@
 #     超时（--verify-wait，默认 60s）则停止并提示重跑。
 #
 # 注意：本脚本只把结果 print 到 stdout，切勿在此直接写文件（沙箱隔离会丢）。
-import json, time, sys, argparse
+import json, time, sys, argparse, os, types
 from urllib.parse import quote
+
+# ====================== 加载公共解析模块 ======================
+# browser-use 沙箱内无法直接 import，通过 exec 加载 ysb_parser.py
+try:
+    import ysb_parser
+except ImportError:
+    _d = os.path.dirname(os.path.abspath(_p)) if '_p' in globals() else (
+         os.path.dirname(os.path.abspath(__file__)) if '__file__' in dir() else '.')
+    ysb_parser = types.ModuleType('ysb_parser')
+    exec(compile(open(os.path.join(_d, 'ysb_parser.py'), encoding='utf-8').read(),
+                 'ysb_parser', 'exec'), ysb_parser.__dict__)
 
 # ====================== 默认配置（无 CLI 参数时使用）======================
 DEFAULT_BRAND = "汤臣倍健"
@@ -38,6 +49,7 @@ def parse_args():
     p.add_argument("--pages", type=int, default=DEFAULT_PAGES, help="抓取页数（默认 %d，每页约 60 条）" % DEFAULT_PAGES)
     p.add_argument("--sort-by-sales", default="true", help="是否按销量排序（true/false，默认 true）")
     p.add_argument("--verify-wait", type=int, default=DEFAULT_VERIFY_WAIT, help="验证弹窗等待秒数（默认 %d）" % DEFAULT_VERIFY_WAIT)
+    p.add_argument("--start-page", type=int, default=1, help="起始页码（断点续传，默认 1）")
     return p.parse_args()
 
 
@@ -53,6 +65,7 @@ def get_opts():
             pages = DEFAULT_PAGES
             sort_by_sales = "true"
             verify_wait = DEFAULT_VERIFY_WAIT
+            start_page = 1
         return _O()
 
 
@@ -63,6 +76,7 @@ SEARCH_KEY = quote(SEARCH_KEY_RAW)
 TOTAL_PAGES = opts.pages
 SORT_BY_SALES = str(opts.sort_by_sales).lower() in ("true", "1", "yes")
 VERIFY_WAIT = opts.verify_wait
+START_PAGE = max(1, opts.start_page)
 
 READ_JS = r"""(() => {
   const app = document.querySelector('#app');
@@ -156,209 +170,16 @@ def check_login():
         return {"on_login": False}
 
 
-# ---------- 验证弹窗检测 ----------
-VERIFY_JS = r"""(() => {
-    const direct = ['.nc_iconfont','.nc-lang-cnt','.scale_text','#nc_1_wrapper','.nc_wrapper',
-        '.geetest_slider_button','.geetest_widget','.geetest_panel','.geetest_btn','.geetest_popup',
-        '.gt_slider_knob','.gt_widget','.gt_cut_wrap',
-        '#tcaptcha_iframe','.tcaptcha-transform','.tcaptcha-action',
-        'iframe[src*="captcha"]','iframe[src*="verify"]','iframe[src*="validate"]','iframe[src*="tcaptcha"]','iframe[src*="geetest"]',
-        '.captcha-container','.verify-container','.slider-verify','[class*="captcha-modal"]','[class*="verify-modal"]'];
-    for (const s of direct) {
-        const el = document.querySelector(s);
-        if (el) {
-            const cs = window.getComputedStyle(el);
-            if (cs.display !== 'none' && cs.visibility !== 'hidden' && cs.opacity !== '0') return JSON.stringify({type:'selector', hit:s});
-        }
-    }
-    const kws = ['拖动滑块','完成验证','请完成下方验证','请完成验证','安全验证','操作过于频繁','请验证身份','滑动验证','人机验证','请拖动','拖动完成验证','请按住滑块','验证失败','请重新验证'];
-    const overlays = document.querySelectorAll('.modal,.dialog,.popup,.mask,.overlay,.toast,[class*="modal"],[class*="dialog"],[class*="popup"],[class*="mask"],[class*="verify"],[class*="captcha"],[class*="slider"]');
-    for (const o of overlays) {
-        const cs = window.getComputedStyle(o);
-        if (cs.display === 'none' || cs.visibility === 'hidden') continue;
-        const t = o.innerText || '';
-        if (!t || t.length > 500) continue;
-        for (const k of kws) { if (t.indexOf(k) !== -1) return JSON.stringify({type:'modal+kw', hit:k}); }
-    }
-    return JSON.stringify({type:null, hit:''});
-})()"""
-
+# ---------- 验证弹窗检测（调用公共模块）----------
 def check_verify():
-    try:
-        return json.loads(js(VERIFY_JS))
-    except Exception:
-        return {"type": None, "hit": ""}
-
-# ---------- JS 自动解滑块（采集过程中风控触发时用）----------
-SOLVE_SLIDER_JS = r"""(() => {
-    const bgImg = document.querySelector('.yidun_bg-img');
-    const jigsaw = document.querySelector('.yidun_jigsaw');
-    const slider = document.querySelector('.yidun_slider');
-    const control = document.querySelector('.yidun_control');
-    if (!bgImg || !slider || !control) return JSON.stringify({ok:false, reason:'no_slider_elements'});
-
-    let gapX = -1;
-    try {
-        const w = bgImg.naturalWidth || 300;
-        const h = bgImg.naturalHeight || 160;
-        const canvas = document.createElement('canvas');
-        canvas.width = w; canvas.height = h;
-        const ctx = canvas.getContext('2d');
-        ctx.drawImage(bgImg, 0, 0, w, h);
-        const data = ctx.getImageData(0, 0, w, h).data;
-
-        const colDiff = new Array(w).fill(0);
-        for (let x = 1; x < w; x++) {
-            let sum = 0;
-            for (let y = 0; y < h; y++) {
-                const idx = (y*w+x)*4, idxP = (y*w+(x-1))*4;
-                sum += Math.abs(data[idx]-data[idxP]) + Math.abs(data[idx+1]-data[idxP+1]) + Math.abs(data[idx+2]-data[idxP+2]);
-            }
-            colDiff[x] = sum / h;
-        }
-
-        const bgRect = bgImg.getBoundingClientRect();
-        const jigRect = jigsaw ? jigsaw.getBoundingClientRect() : bgRect;
-        const scale = bgRect.width / w;
-        const jigsawW = (jigRect.width || 51) / scale;
-
-        let maxDiff = 0;
-        for (let x = Math.floor(jigsawW)+2; x < w-2; x++) maxDiff = Math.max(maxDiff, colDiff[x]);
-        const threshold = maxDiff * 0.4;
-        const peaks = [];
-        for (let x = Math.floor(jigsawW)+2; x < w-2; x++) { if (colDiff[x] > threshold) peaks.push(x); }
-
-        let bestScore = 0;
-        for (let i = 0; i < peaks.length; i++) {
-            for (let j = i+1; j < peaks.length; j++) {
-                const dist = peaks[j]-peaks[i];
-                if (Math.abs(dist-jigsawW) < 8) {
-                    const score = colDiff[peaks[i]]+colDiff[peaks[j]];
-                    if (score > bestScore) { bestScore = score; gapX = peaks[i]; }
-                }
-            }
-        }
-    } catch(e) {
-        return JSON.stringify({ok:false, reason:'canvas_error:'+e.message});
-    }
-
-    if (gapX < 0) return JSON.stringify({ok:false, reason:'no_gap_found'});
-
-    const bgRect = bgImg.getBoundingClientRect();
-    const jigRect = jigsaw ? jigsaw.getBoundingClientRect() : bgRect;
-    const scale = bgRect.width / (bgImg.naturalWidth || 300);
-    const gapXDisplay = gapX * scale;
-    const targetX = bgRect.x + gapXDisplay;
-    const dragDist = Math.round(targetX - jigRect.x);
-    if (dragDist < 10) return JSON.stringify({ok:false, reason:'drag_too_small:'+dragDist});
-
-    const sliderRect = slider.getBoundingClientRect();
-    const startX = sliderRect.x + sliderRect.width/2;
-    const startY = sliderRect.y + sliderRect.height/2;
-
-    slider.dispatchEvent(new MouseEvent('mousedown', {bubbles:true, cancelable:true, clientX:startX, clientY:startY}));
-
-    const steps = 25;
-    let totalDelay = 0;
-    for (let i = 1; i <= steps; i++) {
-        const progress = 1 - Math.pow(1-i/steps, 2.5);
-        const x = startX + dragDist * progress;
-        const y = startY + (i%3-1)*0.4;
-        const delay = 8 + 20*(i/steps) + (i%5)*2;
-        totalDelay += delay;
-        setTimeout(() => document.dispatchEvent(new MouseEvent('mousemove', {bubbles:true, cancelable:true, clientX:x, clientY:y})), totalDelay);
-    }
-    totalDelay += 40;
-    setTimeout(() => document.dispatchEvent(new MouseEvent('mousemove', {bubbles:true, cancelable:true, clientX:startX+dragDist+3, clientY:startY})), totalDelay);
-    totalDelay += 40;
-    setTimeout(() => document.dispatchEvent(new MouseEvent('mousemove', {bubbles:true, cancelable:true, clientX:startX+dragDist-2, clientY:startY})), totalDelay);
-    totalDelay += 40;
-    setTimeout(() => document.dispatchEvent(new MouseEvent('mousemove', {bubbles:true, cancelable:true, clientX:startX+dragDist, clientY:startY})), totalDelay);
-    totalDelay += 100;
-    setTimeout(() => document.dispatchEvent(new MouseEvent('mouseup', {bubbles:true, cancelable:true, clientX:startX+dragDist, clientY:startY})), totalDelay);
-
-    return JSON.stringify({ok:true, dragDist:dragDist, finishMs:totalDelay});
-})()"""
-
-
-def try_auto_solve_slider(max_retries=3):
-    """尝试自动解决滑块验证（JS 图像分析+模拟拖拽，刷新重试）。
-    返回 True=验证通过，False=失败。"""
-    for attempt in range(max_retries):
-        sys.stderr.write("  [滑块自动解决] 尝试 %d/%d...\n" % (attempt+1, max_retries))
-        if attempt > 0:
-            js(r"""(() => {
-                const refresh = document.querySelector('.yidun_refresh');
-                if (refresh) refresh.click();
-                return 'ok';
-            })()""")
-            time.sleep(2)
-        for _ in range(10):
-            time.sleep(0.5)
-            info = js(r"""(() => {
-                const bg = document.querySelector('.yidun_bg-img');
-                const jig = document.querySelector('.yidun_jigsaw');
-                return JSON.stringify({
-                    bgW: bg ? bg.getBoundingClientRect().width : 0,
-                    jigW: jig ? jig.getBoundingClientRect().width : 0
-                });
-            })()""")
-            try:
-                d = json.loads(info)
-                if d.get("bgW", 0) > 50 and d.get("jigW", 0) > 10:
-                    break
-            except Exception:
-                pass
-        result = js(SOLVE_SLIDER_JS)
-        try:
-            r = json.loads(result)
-            if not r.get("ok"):
-                sys.stderr.write("  [滑块自动解决] 失败: %s\n" % r.get("reason", "unknown"))
-                continue
-            sys.stderr.write("  [滑块自动解决] 拖拽距离=%s 预计完成=%sms\n" % (r.get("dragDist"), r.get("finishMs")))
-        except Exception as e:
-            sys.stderr.write("  [滑块自动解决] JS执行异常: %s\n" % e)
-            continue
-        time.sleep(3)
-        v = check_verify()
-        if not v.get("type"):
-            sys.stderr.write("  [滑块自动解决] >>> 验证通过！<<<\n")
-            return True
-        sys.stderr.write("  [滑块自动解决] 验证未通过，重试...\n")
-    return False
-
+    return ysb_parser.check_verify(js)
 
 def handle_verify(timeout):
-    sys.stderr.write("\n" + "=" * 64 + "\n")
-    sys.stderr.write("[!] 检测到验证弹窗（滑块/验证码/风控）。\n")
-    # 先尝试自动解决（易盾滑块用 JS 图像分析+模拟拖拽）
-    v = check_verify()
-    if v.get("type") == "yidun_slider":
-        sys.stderr.write("[*] 尝试自动解决滑块...\n")
+    """处理验证弹窗：自动解决(JS canvas分析) → 失败转人工等待。"""
+    def _log(msg):
+        sys.stderr.write(msg + "\n")
         sys.stderr.flush()
-        if try_auto_solve_slider(max_retries=3):
-            sys.stderr.write("[OK] 滑块自动解决成功，继续采集。\n\n")
-            return True
-        sys.stderr.write("[!] 自动解决失败，转为等待手动完成\n")
-
-    sys.stderr.write("    >>> 请到 9222 Chrome 窗口手动完成验证 <<<\n")
-    sys.stderr.write("    脚本将等待最多 %d 秒，每 2 秒检测一次弹窗是否消失...\n" % timeout)
-    sys.stderr.write("=" * 64 + "\n")
-    sys.stderr.flush()
-    deadline = time.time() + timeout
-    last_tick = time.time()
-    while time.time() < deadline:
-        time.sleep(2)
-        v = check_verify()
-        if not v.get("type"):
-            sys.stderr.write("[OK] 验证弹窗已消失，继续采集。\n\n")
-            return True
-        if time.time() - last_tick >= 10:
-            remain = int(deadline - time.time())
-            sys.stderr.write("    ... 仍在等待（剩余 %d 秒，当前弹窗: %s）\n" % (remain, v.get("hit", "")))
-            last_tick = time.time()
-    sys.stderr.write("[!] 等待超时，验证弹窗仍未消失。请手动完成后重跑。\n")
-    return False
+    return ysb_parser.handle_verify_browser(js, timeout=timeout, log_fn=_log)
 
 
 # ---------- 主流程 ----------
@@ -406,6 +227,18 @@ for page in range(1, TOTAL_PAGES + 1):
             stopped = True; break
         if not wait_ready():
             sys.stderr.write("page %d: 验证后列表未恢复，停止\n" % page); stopped = True; break
+    # 断点续传：跳过已采集的页（仅翻页不采集）
+    if page < START_PAGE:
+        sys.stderr.write("[%s] page %d: 跳过（断点续传从 page %d 开始）\n" % (BRAND, page, START_PAGE))
+        if not click_next():
+            sys.stderr.write("page %d: 未找到下一页按钮，停止\n" % page); stopped = True; break
+        for _ in range(25):
+            time.sleep(1)
+            f = first_name()
+            if f and f != prev_first:
+                break
+        prev_first = first_name()
+        continue
     r = js(READ_JS)
     try:
         data = json.loads(r)
@@ -431,5 +264,5 @@ for page in range(1, TOTAL_PAGES + 1):
         sys.stderr.write("page %d: 点击后列表未变化，停止\n" % page); stopped = True; break
     prev_first = first_name()
 
-sys.stderr.write("[%s] TOTAL %d (pages=%d%s)\n" % (BRAND, len(all_items), TOTAL_PAGES, ", stopped early" if stopped else ""))
+sys.stderr.write("[%s] TOTAL %d (pages=%d-%d%s)\n" % (BRAND, len(all_items), START_PAGE, TOTAL_PAGES, ", stopped early" if stopped else ""))
 print(json.dumps(all_items, ensure_ascii=False))

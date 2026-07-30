@@ -1,5 +1,55 @@
 # 更新说明 (CHANGELOG)
 
+## 2026-07-31 — 一键全流程 + 公共模块拆分 + 安全加固
+
+### 核心变更
+
+#### 1. 新增 `run.py` 一键全流程编排脚本
+
+| 文件 | 说明 |
+|------|------|
+| `scripts/run.py` | 一键串联：Chrome检测→登录→列表采集→详情采集→出表，自动检测 browser-use 可用性并回退到 CDP 直连 |
+
+**解决问题**：此前需用户手动执行多条命令（browser-use CLI 需 stdin 管道），现在一条命令完成全流程。
+
+#### 2. 新增 `cdp_extract.py` CDP 直连列表采集
+
+| 文件 | 说明 |
+|------|------|
+| `scripts/cdp_extract.py` | 用 `websocket-client` 直连 Chrome 9222，不依赖 browser-use，兼容 Python 3.10+ |
+
+**解决问题**：`extract.py` 依赖 browser-use（需 Python ≥3.11），Python 3.10 环境下列表采集不可用。
+
+#### 3. 新增 `ysb_parser.py` 公共解析模块
+
+| 文件 | 说明 |
+|------|------|
+| `scripts/ysb_parser.py` | 集中封装：`decode_price`、`parse_sales`、`check_verify`、`handle_verify_browser`、`is_group_buy_name`、`VERIFY_JS`、`SOLVE_SLIDER_JS`、`PRODUCT_URL_GROUP`/`PRODUCT_URL_REGULAR` |
+
+**解决问题**：`extract.py`、`process.py`、`cdp_extract.py` 中重复维护价格解码、销量解析、验证检测等函数，修改需多处同步。现统一引用 `ysb_parser.py`，消除约 300 行重复代码。
+
+#### 4. 安全与稳定性改进
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| 密码注入安全 | `auto_login.py` | 用 `json.dumps()` 序列化密码，防止单引号/反斜杠导致 JS 语法错误 |
+| CDP 超时保护 | `ysb_common.py` | `cdp_send()` 增加超时参数，防止 WebSocket 断开导致脚本永久阻塞 |
+| 登录后验证 | `auto_login.py` | 增加 Vue Router 就绪检测，确保页面完全跳转后才判定登录成功 |
+| 图片处理优化 | `process.py` | HTML 报告用原始 URL（不下载），Excel 用内存压缩（不落临时文件） |
+| 断点续传 | `extract.py` | 新增 `--start-page` 参数支持从指定页续采 |
+
+#### 5. 文档全面更新
+
+| 文档 | 更新内容 |
+|------|----------|
+| `SKILL.md` | 新增「模块架构」+「推荐方式：一键全流程」章节，browser-use 降级为备选 |
+| `README.md` | 目录结构、技术架构表、依赖列表全面更新 |
+| `使用指南.md` | 流程图改为 `run.py` 编排视图，脚本引用更新为 CDP 直连版 |
+| `DEPENDENCIES.md` | 依赖图新增 `run.py`/`cdp_extract.py`/`ysb_parser.py`，browser-use 标为可选 |
+| `CUSTOMIZATION_GUIDE.md` | 数据链路图更新引用 `ysb_parser.py` |
+
+---
+
 ## 2026-07-30 — 滑块验证公共模块重构 + 稳定性增强
 
 ### 核心变更：提取 `ysb_common.py` 公共模块

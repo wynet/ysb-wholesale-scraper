@@ -11,7 +11,7 @@
     0 = 登录成功（或已登录）
     1 = 登录失败（滑块验证未通过或其他错误）
 """
-import sys, time, websocket
+import sys, time, json, websocket
 import ysb_common
 
 
@@ -65,27 +65,29 @@ def main():
 
     # Step 1: 填写手机号
     print("[1] 填写手机号: %s***%s" % (phone[:3], phone[-4:]))
+    _safe_phone = json.dumps(phone)
     ysb_common.cdp_eval(ws, """(() => {
         const input = document.querySelector('input[placeholder=手机号码], input[type=text]');
         if (!input) return 'no_input';
         const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-        setter.call(input, '%s');
+        setter.call(input, %s);
         input.dispatchEvent(new Event('input', {bubbles: true}));
         input.dispatchEvent(new Event('change', {bubbles: true}));
         return 'ok';
-    })()""" % phone)
+    })()""" % _safe_phone)
 
-    # Step 2: 填写密码
+    # Step 2: 填写密码（JSON 序列化转义，防止单引号/反斜杠导致 JS 语法错误）
     print("[2] 填写密码")
+    _safe_pwd = json.dumps(password)
     ysb_common.cdp_eval(ws, """(() => {
         const input = document.querySelector('input[placeholder=密码], input[type=password]');
         if (!input) return 'no_input';
         const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-        setter.call(input, '%s');
+        setter.call(input, %s);
         input.dispatchEvent(new Event('input', {bubbles: true}));
         input.dispatchEvent(new Event('change', {bubbles: true}));
         return 'ok';
-    })()""" % password)
+    })()""" % _safe_pwd)
 
     time.sleep(0.3)
 
@@ -140,12 +142,32 @@ def main():
     success = ysb_common.solve_slider(ws, max_retries=6, log=print)
 
     if success:
-        print("\n>>> 登录成功！<<<")
-        time.sleep(2)
-        h = ysb_common.cdp_eval(ws, "location.hash") or ""
-        print("当前页面: %s" % h[:60])
-        ws.close()
-        sys.exit(0)
+        print("\n>>> 滑块验证通过，等待登录完成...<<<")
+        # 登录后验证：等待页面跳转离开登录页 + Vue Router 就绪
+        logged_in = False
+        for wait in range(15):
+            time.sleep(1)
+            h = ysb_common.cdp_eval(ws, "location.hash") or ""
+            txt = ysb_common.cdp_eval(ws, "document.body.innerText.substring(0,200)") or ""
+            if "账户登录" not in txt and "/login" not in h:
+                # 已离开登录页，检查 Vue Router
+                vue_ok = ysb_common.cdp_eval(ws, r"""(() => {
+                    const app = document.querySelector('#app');
+                    return (app && app.__vue__ && app.__vue__.$router) ? 'ok' : 'no_vue';
+                })()""")
+                if vue_ok == 'ok':
+                    print(">>> 登录成功！Vue Router 已就绪 <<<")
+                    logged_in = True
+                    break
+        if logged_in:
+            h = ysb_common.cdp_eval(ws, "location.hash") or ""
+            print("当前页面: %s" % h[:60])
+            ws.close()
+            sys.exit(0)
+        else:
+            print(">>> 滑块已通过但页面未正常跳转，请手动检查 <<<")
+            ws.close()
+            sys.exit(1)
     else:
         print("\n>>> 滑块验证未通过 <<<")
         ws.close()

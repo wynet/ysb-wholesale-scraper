@@ -40,11 +40,14 @@ ysb-wholesale-scraper/
 │   ├── report_schema.md             # 字段→HTML元素映射表
 │   └── troubleshooting.md           # 常见问题排查
 └── scripts/
-    ├── ysb_common.py                # 公共模块（CDP操作 + 滑块验证，被多处调用）
+    ├── run.py                       # 一键全流程编排（推荐入口）
+    ├── ysb_common.py                # 公共模块：CDP通信 + 滑块验证（被多处调用）
+    ├── ysb_parser.py                # 公共模块：价格解码 + 销量解析 + JS模板
     ├── auto_login.py                # 自动登录 + 滑块验证（调用 ysb_common）
-    ├── extract.py                   # 列表页采集（browser-use 沙箱内）
-    ├── cdp_fetch_detail_v2.py       # 详情页采集 v2（CDP直连，调用 ysb_common）
-    ├── fetch_detail.py              # 详情页采集 v1（browser-use 沙箱内）
+    ├── cdp_extract.py               # 列表页采集（CDP直连，推荐，Python 3.10+）
+    ├── extract.py                   # 列表页采集（browser-use 版，备选）
+    ├── cdp_fetch_detail_v2.py       # 详情页采集 v2（CDP直连，推荐）
+    ├── fetch_detail.py              # 详情页采集 v1（browser-use 版，备选）
     ├── process.py                   # 解析出表（普通 Python）
     └── grow.py                      # 成长报告查看
 ```
@@ -52,7 +55,7 @@ ysb-wholesale-scraper/
 ## 前置条件
 
 - Chrome 调试会话（端口 9222）
-- Python 依赖：browser-use、openpyxl、websocket-client、Pillow、numpy
+- Python 依赖：openpyxl、websocket-client、Pillow、numpy、ddddocr（browser-use 仅在 Python ≥3.11 时可选）
 - 完整依赖说明见 [DEPENDENCIES.md](docs/DEPENDENCIES.md)
 
 ## 技术文档
@@ -68,12 +71,15 @@ ysb-wholesale-scraper/
 
 | 步骤 | 脚本 | 说明 |
 |------|------|------|
-| 0. 自动登录 | auto_login.py | CDP 直连 + 网易易盾滑块自动解决（调用 ysb_common 公共模块） |
-| 1. 列表采集 | extract.py | browser-use 沙箱内读 Vuex Store |
-| 2.5 详情页采集 | cdp_fetch_detail_v2.py | CDP 直连 + SPA Vue Router 导航 + 智能路由（调用 ysb_common） |
+| 全流程 | run.py | 一键编排：Chrome检测→登录→列表采集→详情采集→出表 |
+| 0. 自动登录 | auto_login.py | CDP 直连 + 网易易盾滑块自动解决（调用 ysb_common） |
+| 1. 列表采集 | cdp_extract.py | CDP 直连读 Vuex Store（推荐，兼容 Python 3.10+） |
+| 1. 列表采集(备选) | extract.py | browser-use 沙箱内读 Vuex Store（需 Python ≥3.11） |
+| 2.5 详情页采集 | cdp_fetch_detail_v2.py | CDP 直连 + SPA Vue Router 导航 + 智能路由（推荐） |
+| 2.5 详情页(备选) | fetch_detail.py | browser-use 沙箱内采集（需 Python ≥3.11） |
 | 2. 解析出表 | process.py | 解码 priceToken + 按系列归并去重 |
 
-> **公共模块**：`ysb_common.py` 封装 CDP 基础操作、Windows 窗口激活、易盾滑块完整验证流程（numpy+ddddocr 缺口识别 + 人类轨迹拖拽），被 `auto_login.py` 和 `cdp_fetch_detail_v2.py` 共同调用，确保登录和采集场景验证逻辑完全一致。详见 `docs/` 目录。
+> **公共模块**：`ysb_common.py` 封装 CDP 基础操作（`cdp_send` 带超时保护）、Windows 窗口激活、易盾滑块完整验证流程（numpy+ddddocr 缺口识别 + 人类轨迹拖拽）；`ysb_parser.py` 封装价格解码（`decode_price`）、销量解析（`parse_sales`）、验证检测（`check_verify`/`handle_verify_browser`）、商品类型判断（`is_group_buy_name`）、JS 模板。两者被所有采集脚本共同调用，修改逻辑只需更新一处。
 
 ## License
 
