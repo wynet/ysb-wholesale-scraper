@@ -30,9 +30,10 @@ ysb-wholesale-scraper/
 ├── SKILL.md                         # 技能说明文档（AI agent 读取）
 ├── profile.json                     # 成长记录 v2
 ├── docs/                            # 技术文档
-│   ├── CHANGELOG.md                 # 更新说明
-│   ├── DEPENDENCIES.md              # 依赖说明
-│   └── flowchart.html               # Skill 实现流程图（可视化）
+│   ├── CHANGELOG.md                 # [更新说明](docs/CHANGELOG.md)
+│   ├── DEPENDENCIES.md              # [依赖说明](docs/DEPENDENCIES.md)
+│   ├── CUSTOMIZATION_GUIDE.md       # [自定义使用指南](docs/CUSTOMIZATION_GUIDE.md)
+│   └── flowchart.html               # [Skill 实现流程图](docs/flowchart.html)（可视化）
 ├── references/
 │   ├── decryption.md                # 价格解密原理（字体反爬 + priceToken）
 │   ├── vuex_schema.md               # Vuex 数据结构与采集陷阱
@@ -52,6 +53,16 @@ ysb-wholesale-scraper/
 
 - Chrome 调试会话（端口 9222）
 - Python 依赖：browser-use、openpyxl、websocket-client、Pillow、numpy
+- 完整依赖说明见 [DEPENDENCIES.md](docs/DEPENDENCIES.md)
+
+## 技术文档
+
+| 文档 | 说明 |
+|------|------|
+| [更新说明](docs/CHANGELOG.md) | 版本变更记录，含本次公共模块重构详情 |
+| [依赖说明](docs/DEPENDENCIES.md) | 系统环境、Python 依赖、安装命令、环境检查脚本 |
+| [自定义使用指南](docs/CUSTOMIZATION_GUIDE.md) | 如何在对话中随时添加/修改详情页采集字段、报表列、筛选规则 |
+| [实现流程图](docs/flowchart.html) | 可视化 SVG 流程图：总体工作流、滑块验证流程、模块架构关系 |
 
 ## 技术架构
 
