@@ -15,12 +15,15 @@
 ## 采集途中滑块验证
 **症状**：列表页翻页或详情页采集过程中弹出网易易盾滑块验证。
 **原因**：请求频率触发了风控策略。
-**解决**（已内置自动处理）：
-- `extract.py` 和 `fetch_detail.py` 均已内置滑块检测：检测到易盾滑块后**先自动解决**——用 JS canvas 下载背景图、分析每列像素梯度找缺口边缘、计算拖拽距离，再通过 `setTimeout` 调度 `MouseEvent` 模拟人类拖拽（ease-out 轨迹 + y 轴抖动 + 终点回弹），刷新重试最多 3 次。
-- 自动解决失败时转为**等待人工完成**（每 2 秒检测弹窗是否消失，超时 60 秒）。
-- `fetch_detail.py` 检测点共 3 处：SPA 入口页、每次路由导航后、new_tab 兜底后。
-- `fetch_detail.py` 已内置 2 秒间隔防验证。
-- **注意**：JS 模拟拖拽的通过率取决于站点风控策略（比 CDP 直连的 `Input.dispatchMouseEvent` 稍弱）。若 JS 方式反复失败，可改用 `auto_login.py` 的 CDP 方式（需在 browser-use 沙箱外运行），或在 9222 Chrome 窗口手动完成。
+**解决**（已内置自动处理，三级策略）：
+- **方案1（首选）：ddddocr + CDP 鼠标事件** — `cdp_fetch_detail_v2.py` 使用 `ddddocr.slide_match()` 精准识别缺口位置，通过 CDP `Input.dispatchMouseEvent` 模拟拖拽（缓动+抖动+过冲回修，比 JS 事件更底层更难被检测）。最多重试 3 次。
+- **方案2（备用）：Canvas 梯度分析 + JS 事件** — 用 JS canvas 下载背景图、分析每列像素梯度找缺口边缘，通过 `setTimeout` 调度 `MouseEvent` 模拟人类拖拽。最多重试 2 次。
+- **方案3（兜底）：等待人工完成** — 每 2 秒检测弹窗是否消失，超时 120 秒。
+- `fetch_detail.py`（browser-use 版）仅含方案2+3；`cdp_fetch_detail_v2.py`（CDP 直连版）含全部三级策略。
+- 检测点共 3 处：SPA 入口页、每次路由导航后、兜底导航后。
+- 已内置 2 秒间隔防验证。
+- **依赖**：`pip install ddddocr`（方案1需要）。
+- **注意**：若担心账号安全，可设置较短的超时时间让脚本快速转入手动模式，由用户在 9222 Chrome 窗口手动完成滑块验证。
 
 ## 详情页数据全相同（SPA 缓存）
 **症状**：所有商品的详情页数据都是第一条的值。

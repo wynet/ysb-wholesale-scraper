@@ -47,7 +47,7 @@ python scripts/auto_login.py <手机号> <密码>
 
 - 退出码 0=成功，1=失败（需人工处理滑块）。
 - 若已登录则直接退出（不重复登录）。
-- **滑块验证原理**：网易易盾拼图验证码——下载背景图，用 numpy 分析每列像素梯度找到缺口边缘（成对峰值，间距≈拼图块宽度），缩放到显示尺寸后计算拖拽距离。
+- **滑块验证原理**：网易易盾拼图验证码——`cdp_fetch_detail_v2.py` 用 `ddddocr.slide_match()` 精准识别缺口（推荐）；`auto_login.py` 用 numpy 分析每列像素梯度找到缺口边缘（成对峰值，间距≈拼图块宽度），缩放到显示尺寸后计算拖拽距离。
 - **人类轨迹模拟**：先慢速靠近滑块→按下→ease-out 拖拽（先快后慢，25+步）→y轴微小抖动→终点回弹→释放。
 - **依赖**：`websocket-client`（CDP 通信）、`Pillow`+`numpy`（图像分析）。
 - **注意**：滑块验证可能因图片质量或策略更新偶尔失败，实测第 3 次尝试通过率最高。若 4 次均失败，需用户手动完成滑块验证后重跑采集脚本。
@@ -147,6 +147,40 @@ PY
 - `new_tab` 异常被捕获，单条失败仅跳过不中断。
 - 个别异形页返回 null，`process.py` 在 HTML 中按 `data-status="pending"` 把该行**置灰标「待补采」**，并回退列表「已拼」值（标「列表」区分）。
 - `process.py` 读 `detail_data.json`：用「已付款件数」作**权威销量主指标**（不同报价单位盒/瓶不可相加，排名取代表报价单一值），并在 HTML 档位页顶部展示「销量分布」小结（最高/平均已付款件数、店铺总数）。
+
+### 步骤 2.7 — CDP 直连详情页采集 v2（脚本：`scripts/cdp_fetch_detail_v2.py`）
+> **推荐方案**：不依赖 browser-use，直连 Chrome 9222 WebSocket，兼容 Python 3.10+。
+
+`fetch_detail.py` 依赖 browser-use（需 Python ≥3.11），在 Python 3.10 环境下不可用。
+`cdp_fetch_detail_v2.py` 是等价替代，用 `websocket-client` 直连 CDP，并集成了 **ddddocr** 滑块识别。
+
+**与 fetch_detail.py 的差异**：
+- **ddddocr 滑块识别**：用 `ddddocr.slide_match()` 精准匹配缺口位置（替代 canvas 梯度分析），识别精度大幅提升。
+- **CDP Input.dispatchMouseEvent 拖拽**：通过 CDP 原生鼠标事件模拟拖拽（比 JS `MouseEvent`/`PointerEvent` 更底层、更难被检测），配合人类轨迹模拟（缓动+抖动+过冲回修）。
+- **三级滑块解决策略**：① ddddocr + CDP 鼠标（首选）→ ② Canvas 梯度分析 + JS 事件（备用）→ ③ 等待人工完成（兜底，120秒超时）。
+- **断线自动重连**：WebSocket 连接中断后自动重新连接 Chrome 标签页，不中断采集。
+- **周期保存**：每 10 条自动保存到 `--existing` 文件（原子写入 `.tmp` 后 `os.replace`），防止崩溃丢数据。
+- **页面崩溃恢复**：检测到 Chrome 标签页崩溃时，通过 CDP HTTP 接口创建新标签页继续采集。
+
+**AI 执行方式**（普通 python，不走 browser-use 沙箱）：
+```bash
+python scripts/cdp_fetch_detail_v2.py \
+  --input vuex_raw.json \
+  --existing detail_data.json \
+  --brand <品牌名> \
+  --top-n 0 \
+  > detail_data.json 2> detail.err.log
+```
+
+参数：
+| 参数 | 默认 | 说明 |
+|---|---|---|
+| `--input` | vuex_raw.json | extract.py 的输出 |
+| `--existing` | detail_data.json | 已有详情路径（断点续传+周期保存） |
+| `--top-n` | 0 | 只抓前 N 个 wid（0=全量） |
+| `--brand` | unknown | 品牌名（用于日志标识） |
+
+**额外依赖**：`ddddocr`（`pip install ddddocr`）、`websocket-client`。
 
 ### 步骤 3 — browser-use 文件系统隔离（重要）
 browser-use 沙箱进程写出的文件**在真实工作区不可见**（看似成功实则丢失）。

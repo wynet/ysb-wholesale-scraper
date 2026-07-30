@@ -68,7 +68,7 @@ def is_group_buy_name(name):
     return '包邮' in (name or '')
 # =================================================
 
-raw = json.load(open(INPUT_JSON, encoding="utf-8"))
+raw = json.load(open(INPUT_JSON, encoding="utf-8-sig"))
 
 # ====================== 串号去重 ======================
 # 多个 Vuex 条目匹配同一张卡片时 domText 完全相同但 provider_name 不同，
