@@ -49,8 +49,9 @@ python scripts/auto_login.py <手机号> <密码>
 - 若已登录则直接退出（不重复登录）。
 - **滑块验证原理**：网易易盾拼图验证码——`cdp_fetch_detail_v2.py` 用 `ddddocr.slide_match()` 精准识别缺口（推荐）；`auto_login.py` 用 numpy 分析每列像素梯度找到缺口边缘（成对峰值，间距≈拼图块宽度），缩放到显示尺寸后计算拖拽距离。
 - **人类轨迹模拟**：先慢速靠近滑块→按下→ease-out 拖拽（先快后慢，25+步）→y轴微小抖动→终点回弹→释放。
-- **依赖**：`websocket-client`（CDP 通信）、`Pillow`+`numpy`（图像分析）。
-- **注意**：滑块验证可能因图片质量或策略更新偶尔失败，实测第 3 次尝试通过率最高。若 4 次均失败，需用户手动完成滑块验证后重跑采集脚本。
+- **公共模块**：滑块验证逻辑统一封装在 `scripts/ysb_common.py`，被 `auto_login.py` 和 `cdp_fetch_detail_v2.py` 共同调用。包含 CDP 基础操作、Windows 窗口激活（解决 hidden 标签页坐标为 0）、缺口识别、轨迹模拟、验证弹窗检测与处理（含断线重连）。修改滑块逻辑只需更新一处。
+- **依赖**：`websocket-client`（CDP 通信）、`Pillow`+`numpy`（图像分析）、`ddddocr`（可选，备用缺口识别）。
+- **注意**：滑块验证可能因图片质量或策略更新偶尔失败。自动验证最多重试 6 次，失败后转人工等待（120 秒超时）。
 
 ### 步骤 1 — 列表采集（脚本：`scripts/extract.py`）
 该脚本在 **browser-use 沙箱**内执行，连接已登录的 9222 Chrome，逐页读取 Vuex

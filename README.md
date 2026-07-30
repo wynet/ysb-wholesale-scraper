@@ -29,15 +29,21 @@
 ysb-wholesale-scraper/
 ├── SKILL.md                         # 技能说明文档（AI agent 读取）
 ├── profile.json                     # 成长记录 v2
+├── docs/                            # 技术文档
+│   ├── CHANGELOG.md                 # 更新说明
+│   ├── DEPENDENCIES.md              # 依赖说明
+│   └── flowchart.html               # Skill 实现流程图（可视化）
 ├── references/
 │   ├── decryption.md                # 价格解密原理（字体反爬 + priceToken）
 │   ├── vuex_schema.md               # Vuex 数据结构与采集陷阱
 │   ├── report_schema.md             # 字段→HTML元素映射表
 │   └── troubleshooting.md           # 常见问题排查
 └── scripts/
-    ├── auto_login.py                # 自动登录 + 滑块验证
+    ├── ysb_common.py                # 公共模块（CDP操作 + 滑块验证，被多处调用）
+    ├── auto_login.py                # 自动登录 + 滑块验证（调用 ysb_common）
     ├── extract.py                   # 列表页采集（browser-use 沙箱内）
-    ├── fetch_detail.py              # 详情页采集（browser-use 沙箱内）
+    ├── cdp_fetch_detail_v2.py       # 详情页采集 v2（CDP直连，调用 ysb_common）
+    ├── fetch_detail.py              # 详情页采集 v1（browser-use 沙箱内）
     ├── process.py                   # 解析出表（普通 Python）
     └── grow.py                      # 成长报告查看
 ```
@@ -51,10 +57,12 @@ ysb-wholesale-scraper/
 
 | 步骤 | 脚本 | 说明 |
 |------|------|------|
-| 0. 自动登录 | auto_login.py | CDP 直连 + 网易易盾滑块自动解决 |
+| 0. 自动登录 | auto_login.py | CDP 直连 + 网易易盾滑块自动解决（调用 ysb_common 公共模块） |
 | 1. 列表采集 | extract.py | browser-use 沙箱内读 Vuex Store |
-| 2.5 详情页采集 | fetch_detail.py | SPA 内 Vue Router 导航 + 智能路由 |
+| 2.5 详情页采集 | cdp_fetch_detail_v2.py | CDP 直连 + SPA Vue Router 导航 + 智能路由（调用 ysb_common） |
 | 2. 解析出表 | process.py | 解码 priceToken + 按系列归并去重 |
+
+> **公共模块**：`ysb_common.py` 封装 CDP 基础操作、Windows 窗口激活、易盾滑块完整验证流程（numpy+ddddocr 缺口识别 + 人类轨迹拖拽），被 `auto_login.py` 和 `cdp_fetch_detail_v2.py` 共同调用，确保登录和采集场景验证逻辑完全一致。详见 `docs/` 目录。
 
 ## License
 
