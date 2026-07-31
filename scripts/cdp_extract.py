@@ -22,42 +22,7 @@ def parse_args():
     p.add_argument("--sort-by-sales", default="true", help="按销量排序")
     return p.parse_args()
 
-READ_JS = r"""(() => {
-  const app = document.querySelector('#app');
-  if (!app || !app.__vue__ || !app.__vue__.$store) return JSON.stringify({error:'no_vue'});
-  const list = app.__vue__.$store.state.drugList.drugList || [];
-  const wraps = Array.from(document.querySelectorAll('.all-goods-wrapper'));
-  const used = new Set();
-  const res = [];
-  for (const it of list) {
-    let block = '';
-    if (it.provider_name) {
-      for (let i = 0; i < wraps.length; i++) {
-        if (used.has(i)) continue;
-        const t = wraps[i].innerText;
-        if (t.indexOf(it.drugname) !== -1 && t.indexOf(it.provider_name) !== -1) {
-          block = t; used.add(i); break;
-        }
-      }
-    }
-    if (!block) {
-      for (let i = 0; i < wraps.length; i++) {
-        if (used.has(i)) continue;
-        if (wraps[i].innerText.indexOf(it.drugname) !== -1) {
-          block = wraps[i].innerText; used.add(i); break;
-        }
-      }
-    }
-    res.push({
-      drugname: it.drugname, specification: it.specification, minamount: it.minamount,
-      drugimageurl: it.drugimageurl, brand: it.brand, provider_name: it.provider_name,
-      unit: it.unit, wholesaleAmount: it.wholesaleAmount, priceToken: it.priceToken,
-      alreadysales: it.alreadysales, wholesaleid: it.wholesaleid,
-      domText: (block||'').replace(/\s+/g,' ').slice(0,1500)
-    });
-  }
-  return JSON.stringify({count: res.length, items: res, matched: used.size, total_cards: wraps.length});
-})()"""
+READ_JS = ysb_parser.READ_JS
 
 def store_len():
     try:

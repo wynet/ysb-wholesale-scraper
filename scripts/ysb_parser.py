@@ -17,18 +17,158 @@ import json, base64, re, time, datetime, sys
 # ====================== 常量 ======================
 UNIT_RE = r'([盒瓶支包袋片套罐条贴副双个])'
 
-# 拼团商品(包邮): isAssemble=true, scene=0
-# 普通商品(起购): isAssemble=false, scene=1
+# 三种详情页 URL 类型（scene 始终为 0）：
+#   1. 医械城: /instrument/drugDetail  (busiScope=9 或 sourceType=1)
+#   2. 拼团:   /drugInfo?isAssemble=true&scene=0   (activitytype=7/8, busiScope≠9)
+#   3. 普通:   /drugInfo?isAssemble=false&scene=0  (activitytype=1, busiScope≠9)
+PRODUCT_URL_INSTRUMENT_GROUP = "https://dian.ysbang.cn/#/instrument/drugDetail?wholesaleid=%s&isAssemble=true&scene=0&trafficType=1"
+PRODUCT_URL_INSTRUMENT_REGULAR = "https://dian.ysbang.cn/#/instrument/drugDetail?wholesaleid=%s&isAssemble=false&scene=0&trafficType=1"
 PRODUCT_URL_GROUP = "https://dian.ysbang.cn/#/drugInfo?wholesaleid=%s&isAssemble=true&scene=0&trafficType=1"
-PRODUCT_URL_REGULAR = "https://dian.ysbang.cn/#/drugInfo?wholesaleid=%s&isAssemble=false&scene=1&trafficType=1"
+PRODUCT_URL_REGULAR = "https://dian.ysbang.cn/#/drugInfo?wholesaleid=%s&isAssemble=false&scene=0&trafficType=1"
+
+# 列表采集 JS（共享）：读取 Vuex store + 匹配卡片 DOM + 采集详情链接
+# 采集方式：从卡片 Vue 组件获取 sourceType/activitytype + router.resolve 生成 URL
+# 路径从 Vue Router 路由表获取（不手动拼接），sourceType=1 → /instrument/drugDetail
+# 被 cdp_extract.py 和 extract.py 共同调用
+READ_JS = r"""(() => {
+  const app = document.querySelector('#app');
+  if (!app || !app.__vue__ || !app.__vue__.$store) return JSON.stringify({error:'no_vue'});
+  const list = app.__vue__.$store.state.drugList.drugList || [];
+  const wraps = Array.from(document.querySelectorAll('.all-goods-wrapper'));
+  const router = app.__vue__.$router;
+  const used = new Set();
+  const res = [];
+  for (const it of list) {
+    let block = '';
+    let matchedWrap = null;
+    if (it.provider_name) {
+      for (let i = 0; i < wraps.length; i++) {
+        if (used.has(i)) continue;
+        const t = wraps[i].innerText;
+        if (t.indexOf(it.drugname) !== -1 && t.indexOf(it.provider_name) !== -1) {
+          block = t; used.add(i); matchedWrap = wraps[i]; break;
+        }
+      }
+    }
+    if (!block) {
+      for (let i = 0; i < wraps.length; i++) {
+        if (used.has(i)) continue;
+        if (wraps[i].innerText.indexOf(it.drugname) !== -1) {
+          block = wraps[i].innerText; used.add(i); matchedWrap = wraps[i]; break;
+        }
+      }
+    }
+    // 从卡片 Vue 组件获取 sourceType + activitytype，用 router.resolve 生成 URL
+    // sourceType=1 → 医械城(/instrument/drugDetail)，sourceType=0 → 药品(/drugInfo)
+    // activitytype=7/8 → 拼团(isAssemble=true)，activitytype=1 → 普通(isAssemble=false)
+    let detailUrl = '';
+    let activitytype = null;
+    let busiScope = null;
+    let sourceType = null;
+    if (matchedWrap) {
+      const vue = matchedWrap.__vue__;
+      if (vue && vue.$props && vue.$props.goodsInfo) {
+        const g = vue.$props.goodsInfo;
+        activitytype = g.activitytype;
+        busiScope = g.busiScope;
+        sourceType = g.sourceType;
+        const wid = g.wholesaleid || it.wholesaleid;
+        if (wid && router) {
+          const isInstrument = g.sourceType === 1;
+          const isGroup = g.activitytype === 7 || g.activitytype === 8;
+          const path = isInstrument ? '/instrument/drugDetail' : '/drugInfo';
+          try {
+            const resolved = router.resolve({
+              path: path,
+              query: { wholesaleid: String(wid), isAssemble: isGroup ? 'true' : 'false', scene: '0', trafficType: '1' }
+            });
+            detailUrl = 'https://dian.ysbang.cn/' + resolved.href;
+          } catch(e) {}
+        }
+      }
+    }
+    // Vuex item 可能含 isassemble 字段（布尔/字符串），用于判断拼团/普通
+    let isAssemble = null;
+    for (const k of ['isassemble','isAssemble','is_assemble','isassemble']) {
+      if (it[k] !== undefined && it[k] !== null) { isAssemble = it[k]; break; }
+    }
+    res.push({
+      drugname: it.drugname, specification: it.specification, minamount: it.minamount,
+      drugimageurl: it.drugimageurl, brand: it.brand, provider_name: it.provider_name,
+      unit: it.unit, wholesaleAmount: it.wholesaleAmount, priceToken: it.priceToken,
+      alreadysales: it.alreadysales, wholesaleid: it.wholesaleid,
+      detail_url: detailUrl, isAssemble: isAssemble, activitytype: activitytype,
+      busiScope: busiScope, sourceType: sourceType,
+      domText: (block||'').replace(/\s+/g,' ').slice(0,1500)
+    });
+  }
+  return JSON.stringify({count: res.length, items: res, matched: used.size, total_cards: wraps.length});
+})()"""
+
+
+def build_detail_url(wholesaleid, name, detail_url=None, activitytype=None, busiScope=None, sourceType=None):
+    """构建商品详情页 URL。
+    优先使用从列表页直接采集的 detail_url；
+    其次用 busiScope/sourceType 判断医械城/药品 + activitytype 判断拼团/普通；
+    最后回退到商品名含「包邮」判断。
+    """
+    if detail_url:
+        # 确保是完整 URL
+        if detail_url.startswith('#'):
+            return 'https://dian.ysbang.cn/' + detail_url
+        return detail_url
+    wid = str(wholesaleid or '').strip()
+    if not wid or wid == 'None':
+        return ''
+    # 判断是否医械城: sourceType=1
+    is_instrument = sourceType in (1, '1')
+    # 判断是否拼团: activitytype=7/8
+    if activitytype is not None:
+        is_group = activitytype in (7, 8, '7', '8')
+    else:
+        is_group = is_group_buy_name(name)
+    if is_instrument:
+        url = PRODUCT_URL_INSTRUMENT_GROUP if is_group else PRODUCT_URL_INSTRUMENT_REGULAR
+    else:
+        url = PRODUCT_URL_GROUP if is_group else PRODUCT_URL_REGULAR
+    return url % wid
+
+
+def parse_detail_url(detail_url):
+    """从采集到的 detail_url 解析出 path, isAssemble, scene。
+    用于详情页采集时直接使用采集到的真实 URL 参数，而非自行判断。
+    返回: dict {path, isAssemble, scene, wholesaleid} 或 None
+    """
+    if not detail_url:
+        return None
+    try:
+        hash_part = detail_url.split('#', 1)[1] if '#' in detail_url else detail_url
+        if '?' not in hash_part:
+            return None
+        path, query_str = hash_part.split('?', 1)
+        params = {}
+        for pair in query_str.split('&'):
+            if '=' in pair:
+                k, v = pair.split('=', 1)
+                params[k] = v
+        return {
+            'path': path,
+            'isAssemble': params.get('isAssemble', ''),
+            'scene': params.get('scene', '0'),
+            'wholesaleid': params.get('wholesaleid', ''),
+        }
+    except Exception:
+        return None
+
 
 # SPA 导航 JS 模板（Vue Router push）
+# 参数: path, wholesaleid, isAssemble, scene
 NAVIGATE_JS = r"""(() => {
     const app = document.querySelector('#app');
     if (!app || !app.__vue__ || !app.__vue__.$router) return 'no_router';
     try {
         app.__vue__.$router.push({
-            path: '/drugInfo',
+            path: '%s',
             query: { wholesaleid: '%s', isAssemble: '%s', scene: '%s', trafficType: '1' }
         });
         return 'ok';
@@ -387,7 +527,8 @@ def is_group_buy_name(name):
 
 def build_wid_info(raw):
     """从 vuex_raw.json 数据构建 wid -> info 字典。
-    info 含: name, is_group_buy（根据商品名判断拼团/普通类型）。
+    info 含: name, is_group_buy, detail_url。
+    is_group_buy 判断优先级：activitytype 字段(7/8=拼团) > Vuex isAssemble 字段 > 商品名含「包邮」 > minamount>=6。
     """
     wid_info = {}
     for r in raw:
@@ -396,8 +537,26 @@ def build_wid_info(raw):
             continue
         name = r.get('drugname', '')
         minamount = r.get('minamount', 0)
-        is_group_buy = is_group_buy_name(name) or (minamount and minamount >= 6)
-        wid_info[wid] = {'name': name, 'is_group_buy': is_group_buy}
+        # 优先使用 activitytype 字段（从卡片 Vue 组件采集）
+        activitytype = r.get('activitytype')
+        if activitytype is not None:
+            is_group_buy = activitytype in (7, 8, '7', '8')
+        elif r.get('isAssemble') is not None:
+            is_assemble = r.get('isAssemble')
+            if isinstance(is_assemble, str):
+                is_group_buy = is_assemble.lower() in ('true', '1', 'yes')
+            else:
+                is_group_buy = bool(is_assemble)
+        else:
+            is_group_buy = is_group_buy_name(name) or (minamount and minamount >= 6)
+        wid_info[wid] = {
+            'name': name,
+            'is_group_buy': is_group_buy,
+            'detail_url': r.get('detail_url', ''),
+            'activitytype': activitytype,
+            'busiScope': r.get('busiScope'),
+            'sourceType': r.get('sourceType'),
+        }
     return wid_info
 
 

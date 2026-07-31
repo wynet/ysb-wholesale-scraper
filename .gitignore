@@ -16,3 +16,5 @@ ysb_images/
 *.html
 detail_existing.json
 profile.json
+
+series.json

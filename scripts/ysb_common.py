@@ -32,11 +32,25 @@ _user32.GetWindowTextW.argtypes = [ctypes.wintypes.HWND, ctypes.c_wchar_p, ctype
 _user32.GetWindowTextW.restype = ctypes.c_int
 _user32.GetWindowTextLengthW.argtypes = [ctypes.wintypes.HWND]
 _user32.GetWindowTextLengthW.restype = ctypes.c_int
+_user32.ShowWindow.argtypes = [ctypes.wintypes.HWND, ctypes.c_int]
+_user32.ShowWindow.restype = ctypes.c_bool
+_user32.IsZoomed.argtypes = [ctypes.wintypes.HWND]
+_user32.IsZoomed.restype = ctypes.c_bool
+_user32.IsIconic.argtypes = [ctypes.wintypes.HWND]
+_user32.IsIconic.restype = ctypes.c_bool
+# ShowWindow 命令常量
+SW_RESTORE = 9       # 还原窗口（如果最小化/最大化）
+SW_SHOWMAXIMIZED = 3 # 最大化
 
 
-def bring_chrome_to_front():
-    """用 Windows API 激活 Chrome 窗口
-    解决 hidden 标签页 getBoundingClientRect 返回 0 的问题。
+def bring_chrome_to_front(maximize=True):
+    """用 Windows API 激活 Chrome 窗口。
+
+    仅在窗口未最大化时才执行最大化，避免反复还原→最大化导致页面布局抖动。
+    仅在窗口最小化时才执行还原。
+
+    参数：
+        maximize: 是否需要最大化窗口（默认 True，滑块验证时推荐最大化）
     """
     found = []
 
@@ -54,8 +68,19 @@ def bring_chrome_to_front():
 
     _user32.EnumWindows(callback, 0)
     if found:
-        _user32.SetForegroundWindow(found[0])
-        time.sleep(0.5)
+        hwnd = found[0]
+        already_maximized = _user32.IsZoomed(hwnd)
+        is_minimized = _user32.IsIconic(hwnd)
+        # 仅最小化时才还原（还原会取消最大化状态，不要对已最大化窗口调用）
+        if is_minimized:
+            _user32.ShowWindow(hwnd, SW_RESTORE)
+            time.sleep(0.2)
+        # 仅未最大化时才最大化
+        if maximize and not already_maximized:
+            _user32.ShowWindow(hwnd, SW_SHOWMAXIMIZED)
+            time.sleep(0.3)
+        _user32.SetForegroundWindow(hwnd)
+        time.sleep(0.3)
         return True
     return False
 
@@ -338,6 +363,14 @@ def solve_slider(ws, max_retries=6, log=print, activate=True):
         log("  [滑块] 未检测到滑块元素")
         return False
 
+    # 仅在开始验证前激活窗口一次，避免每次刷新验证码都触发窗口状态变化
+    if activate:
+        bring_chrome_to_front()
+        try:
+            cdp_send(ws, "Page.bringToFront")
+        except Exception:
+            pass
+
     for attempt in range(max_retries):
         log("  [滑块] 尝试 %d/%d..." % (attempt + 1, max_retries))
 
@@ -419,14 +452,6 @@ def solve_slider(ws, max_retries=6, log=print, activate=True):
 
         log("  [滑块] 缺口=%d 拖拽距离=%d (attempt %d)" % (gap_x, drag_dist, attempt + 1))
 
-        # 激活窗口后拖拽
-        if activate:
-            bring_chrome_to_front()
-            try:
-                cdp_send(ws, "Page.bringToFront")
-            except Exception:
-                pass
-
         simulate_drag(ws, start_x, start_y, drag_dist)
 
         # 等待验证结果
@@ -470,14 +495,14 @@ def handle_verify(ws, timeout=120, log=print, reconnect_fn=None):
     log("[!] 检测到验证弹窗（%s: %s）" % (vtype, v.get("hit", "")))
 
     if vtype in ("yidun_slider", "captcha"):
-        # 激活窗口后自动验证
+        # 激活窗口后自动验证（solve_slider 内部不再重复激活）
         bring_chrome_to_front()
         try:
             cdp_send(ws, "Page.bringToFront")
         except Exception:
             pass
         log("[*] 自动验证（numpy主 + ddddocr备）...")
-        if solve_slider(ws, max_retries=6, log=log):
+        if solve_slider(ws, max_retries=6, log=log, activate=False):
             log("[OK] 自动验证通过，继续。")
             log("")
             return True, ws

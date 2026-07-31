@@ -169,12 +169,25 @@ def main():
         txt = ""
         success = False
 
-        if is_group_buy:
-            routes_to_try = [("true", "0", "拼团"), ("false", "1", "普通")]
+        # 优先使用采集到的 detail_url 解析路径和参数（不自行判断 URL 类型）
+        collected = ysb_parser.parse_detail_url(info.get('detail_url', ''))
+        if collected:
+            nav_path = collected['path']
+            primary_assemble = collected['isAssemble'] or ("true" if is_group_buy else "false")
+            primary_scene = collected['scene'] or "0"
         else:
-            routes_to_try = [("false", "1", "普通"), ("true", "0", "拼团")]
+            # 回退: 用 busiScope/sourceType 判断路径
+            is_instrument = info.get('busiScope') in (9, '9') or info.get('sourceType') in (1, '1')
+            nav_path = '/instrument/drugDetail' if is_instrument else '/drugInfo'
+            primary_assemble = "true" if is_group_buy else "false"
+            primary_scene = "0"
 
-        for route_idx, (is_assemble, scene, label) in enumerate(routes_to_try):
+        # 主路由用采集参数，回退路由交换 isAssemble
+        fallback_assemble = "false" if primary_assemble == "true" else "true"
+        routes_to_try = [(nav_path, primary_assemble, primary_scene, "采集"),
+                         (nav_path, fallback_assemble, "0", "回退")]
+
+        for route_idx, (path, is_assemble, scene, label) in enumerate(routes_to_try):
             try:
                 js(ysb_parser.NAV_HOME_JS)
                 time.sleep(2)
@@ -184,7 +197,7 @@ def main():
                 except Exception:
                     pass
 
-                res = js(ysb_parser.NAVIGATE_JS % (wid, is_assemble, scene))
+                res = js(ysb_parser.NAVIGATE_JS % (path, wid, is_assemble, scene))
                 if res and res.startswith('error'):
                     sys.stderr.write("wid=%s router.push 异常(%s): %s\n" % (wid, label, res))
 
@@ -222,15 +235,13 @@ def main():
                 txt = ""
                 continue
 
-        # location.href 兜底
+        # location.href 兜底（使用采集到的路径和参数）
         if not success:
             sys.stderr.write("wid=%s SPA 导航失败，尝试 location.href 兜底\n" % wid)
             try:
-                fallback_assemble = "true" if is_group_buy else "false"
-                fallback_scene = "0" if is_group_buy else "1"
                 ysb_common.cdp_eval(ws_global,
-                    "location.href = 'https://dian.ysbang.cn/#/drugInfo?wholesaleid=%s&isAssemble=%s&scene=%s&trafficType=1'"
-                    % (wid, fallback_assemble, fallback_scene))
+                    "location.href = 'https://dian.ysbang.cn/#%s?wholesaleid=%s&isAssemble=%s&scene=%s&trafficType=1'"
+                    % (nav_path, wid, primary_assemble, primary_scene))
                 time.sleep(5)
                 js(ysb_parser.DISMISS_JS)
                 time.sleep(1)

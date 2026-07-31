@@ -174,6 +174,10 @@ for it in raw:
         "tiers": parse_tiers(dom, it.get("unit") or ""),
         "img": it.get("drugimageurl") or "",
         "wholesaleid": str(it.get("wholesaleid") or "").strip(),
+        "detail_url": it.get("detail_url") or "",
+        "activitytype": it.get("activitytype"),
+        "busiScope": it.get("busiScope"),
+        "sourceType": it.get("sourceType"),
         "key": norm_key(it.get("drugname"), it.get("specification")),
         "product": product_key(it.get("drugname"), it.get("specification")),
     }
@@ -222,6 +226,10 @@ def product_summary(recs):
         "rep_spec": rep["spec"],
         "rep_img": rep["img"],
         "rep_wid": rep_wid,
+        "rep_detail_url": rep.get("detail_url", ""),
+        "rep_activitytype": rep.get("activitytype"),
+        "rep_busiScope": rep.get("busiScope"),
+        "rep_sourceType": rep.get("sourceType"),
         # 代表商品(销量最高那家)自身的真实单价/起订量 —— 与下方商品ID链接严格对应
         "rep_price": rep["price"],
         "rep_min_order": rep["min_order"],
@@ -273,7 +281,9 @@ def three_tiers(recs):
     offers = []
     for x in recs:
         offers.append({"price": x["price"], "qty": x["min_order"], "label": "起订%s%s" % (x["min_order"], x["unit"]),
-                       "expiry": x["expiry"], "sales": x["sales"], "provider": x["provider"], "wid": x["wholesaleid"]})
+                       "expiry": x["expiry"], "sales": x["sales"], "provider": x["provider"], "wid": x["wholesaleid"],
+                       "detail_url": x.get("detail_url", ""), "activitytype": x.get("activitytype"),
+                       "busiScope": x.get("busiScope"), "sourceType": x.get("sourceType")})
         for (q, p) in x["tiers"]:
             offers.append({"price": float(p), "qty": q, "label": "满%d%s" % (q, x["unit"]),
                            "expiry": x["expiry"], "sales": x["sales"], "provider": x["provider"], "wid": x["wholesaleid"]})
@@ -322,13 +332,13 @@ def style_header(ws, n):
         cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
 
 
-def link_cell(cell, wid, name=""):
+def link_cell(cell, wid, name="", detail_url="", activitytype=None, busiScope=None, sourceType=None):
     """把单元格设为 wholesaleid 文本，并附商品详情页超链接。
-    根据商品名自动选择拼团/普通路由参数。"""
+    优先使用从列表页直接采集的 detail_url，否则根据 busiScope/sourceType/activitytype 选择路由。"""
     if wid:
         cell.value = wid
-        url = PRODUCT_URL_GROUP if is_group_buy_name(name) else PRODUCT_URL_REGULAR
-        cell.hyperlink = url % wid
+        url = ysb_parser.build_detail_url(wid, name, detail_url, activitytype, busiScope, sourceType)
+        cell.hyperlink = url
         cell.font = Font(color="0563C1", underline="single")
     else:
         cell.value = ""
@@ -338,7 +348,7 @@ def link_cell(cell, wid, name=""):
 ws = wb.active
 ws.title = "热销产品"
 hdr1 = ["排名", "图片", "产品名称", "规格", "本商品单价(元)", "起订量", "总销量", "供应商数", "全网最低价",
-        "有效期示例", "商品ID"]
+        "有效期示例", "商品ID", "详情链接"]
 ws.append(hdr1)
 style_header(ws, len(hdr1))
 for i, s in enumerate(product_list, 1):
@@ -360,15 +370,17 @@ for i, s in enumerate(product_list, 1):
     # 全网最低价：同产品家族下所有商户报价最小值（比价参考，不等于链接商品价）
     ws.cell(row=r, column=9, value=s["lowest_price"])
     ws.cell(row=r, column=10, value=(s["expiries"][0] if s["expiries"] else "")).alignment = Alignment(wrap_text=True, vertical="center")
-    link_cell(ws.cell(row=r, column=11), s["rep_wid"], s["rep_name"])
+    link_cell(ws.cell(row=r, column=11), s["rep_wid"], s["rep_name"], s.get("rep_detail_url", ""), s.get("rep_activitytype"), s.get("rep_busiScope"), s.get("rep_sourceType"))
+    # 详情链接列：完整 URL 文本
+    ws.cell(row=r, column=12, value=ysb_parser.build_detail_url(s["rep_wid"], s["rep_name"], s.get("rep_detail_url", ""), s.get("rep_activitytype"), s.get("rep_busiScope"), s.get("rep_sourceType")))
     ws.row_dimensions[r].height = 50
-for ci, w in enumerate([6, 10, 30, 22, 13, 9, 12, 9, 12, 16, 14], 1):
+for ci, w in enumerate([6, 10, 30, 22, 13, 9, 12, 9, 12, 16, 14, 50], 1):
     ws.column_dimensions[get_column_letter(ci)].width = w
 ws.freeze_panes = "A2"
 
 # Sheet2: TOP10 最低价档位（产品内 3 个最低报价）
 ws2 = wb.create_sheet("TOP10最低价档位")
-hdr2 = ["产品排名", "产品名称", "规格", "档位", "价格(元)", "起订/满量", "有效期", "该价销量", "供应商", "商品ID"]
+hdr2 = ["产品排名", "产品名称", "规格", "档位", "价格(元)", "起订/满量", "有效期", "该价销量", "供应商", "商品ID", "详情链接"]
 ws2.append(hdr2)
 style_header(ws2, len(hdr2))
 rr = 2
@@ -385,9 +397,10 @@ for ri, s in enumerate(top_products, 1):
         ws2.cell(row=rr, column=7, value=o["expiry"])
         ws2.cell(row=rr, column=8, value=o["sales"])
         ws2.cell(row=rr, column=9, value=o["provider"]).alignment = Alignment(wrap_text=True, vertical="center")
-        link_cell(ws2.cell(row=rr, column=10), o["wid"], s["rep_name"])
+        link_cell(ws2.cell(row=rr, column=10), o["wid"], s["rep_name"], o.get("detail_url", ""), o.get("activitytype"), o.get("busiScope"), o.get("sourceType"))
+        ws2.cell(row=rr, column=11, value=ysb_parser.build_detail_url(o["wid"], s["rep_name"], o.get("detail_url", ""), o.get("activitytype"), o.get("busiScope"), o.get("sourceType")))
         rr += 1
-for ci, w in enumerate([8, 26, 14, 8, 10, 16, 14, 10, 22, 14], 1):
+for ci, w in enumerate([8, 26, 14, 8, 10, 16, 14, 10, 22, 14, 50], 1):
     ws2.column_dimensions[get_column_letter(ci)].width = w
 ws2.freeze_panes = "A2"
 
@@ -401,7 +414,7 @@ deduped = []
 for key, rs in prod_rank:
     best = max(rs, key=lambda x: x["sales"])
     d = dict(best); d["_nlist"] = len(rs); deduped.append(d)
-hdr3 = ["排名", "图片", "标题", "规格", "单价(元)", "单位", "起订量", "销量", "供应商", "有效期", "商品ID"]
+hdr3 = ["排名", "图片", "标题", "规格", "单价(元)", "单位", "起订量", "销量", "供应商", "有效期", "商品ID", "详情链接"]
 ws3.append(hdr3)
 style_header(ws3, len(hdr3))
 for i, d in enumerate(deduped, 1):
@@ -421,9 +434,10 @@ for i, d in enumerate(deduped, 1):
     ws3.cell(row=r, column=8, value=d["sales"])
     ws3.cell(row=r, column=9, value=d["provider"]).alignment = Alignment(wrap_text=True, vertical="center")
     ws3.cell(row=r, column=10, value=d["expiry"])
-    link_cell(ws3.cell(row=r, column=11), d["wholesaleid"], d["name"])
+    link_cell(ws3.cell(row=r, column=11), d["wholesaleid"], d["name"], d.get("detail_url", ""), d.get("activitytype"), d.get("busiScope"), d.get("sourceType"))
+    ws3.cell(row=r, column=12, value=ysb_parser.build_detail_url(d["wholesaleid"], d["name"], d.get("detail_url", ""), d.get("activitytype"), d.get("busiScope"), d.get("sourceType")))
     ws3.row_dimensions[r].height = 50
-for ci, w in enumerate([6, 10, 40, 26, 10, 6, 8, 10, 22, 14, 14], 1):
+for ci, w in enumerate([6, 10, 40, 26, 10, 6, 8, 10, 22, 14, 14, 50], 1):
     ws3.column_dimensions[get_column_letter(ci)].width = w
 ws3.freeze_panes = "A2"
 
@@ -488,6 +502,10 @@ def build_offers(recs):
         offers.append({
             "wid": wid,
             "name": x.get("name", ""),
+            "detail_url": x.get("detail_url", ""),
+            "activitytype": x.get("activitytype"),
+            "busiScope": x.get("busiScope"),
+            "sourceType": x.get("sourceType"),
             "price": x["price"],
             "minOrder": x["min_order"], "unit": x["unit"],
             "provider": x["provider"], "expiry": (det.get("expiry_date") or x.get("expiry") or ""),
@@ -550,6 +568,10 @@ for s in product_list:
     avg = round(sum(prices) / len(prices), 2) if prices else s["lowest_price"]
     products_out.append({
         "id": 0, "name": s["rep_name"], "spec": s["rep_spec"], "repImg": s["rep_img"], "repWid": s["rep_wid"],
+        "repDetailUrl": s.get("rep_detail_url", ""),
+        "repActivitytype": s.get("rep_activitytype"),
+        "repBusiScope": s.get("rep_busiScope"),
+        "repSourceType": s.get("rep_sourceType"),
         "avg": avg, "nSup": s["n_suppliers"], "minP": s["lowest_price"],
         "expiry": (s["expiries"][0] if s["expiries"] else ""),
         "sales": sales_metric, "salesSrc": sales_src, "offers": offers,
@@ -595,6 +617,8 @@ tr:hover { background:#fafcff; }
 .t1 { background:#16a34a; } .t2 { background:#1677ff; } .t3 { background:#ea8c2b; }
 .stag { display:inline-block; margin-top:3px; font-size:10.5px; color:#666; }
 .wid a { color:#0563C1; white-space:nowrap; }
+.wid a.dlink { font-size:12px; }
+.dlink { color:#0563C1; text-decoration:none; } .dlink:hover { text-decoration:underline; }
 .summary { display:flex; gap:12px; flex-wrap:wrap; margin:6px 0 16px; }
 .summary > div { background:#fff; border:1px solid #eef0f3; border-radius:10px; padding:10px 16px; min-width:140px; box-shadow:0 1px 3px rgba(0,0,0,.04); }
 .summary b { color:#1677ff; font-size:18px; display:block; margin-top:2px; }
@@ -627,17 +651,26 @@ h2 { font-size:18px; margin:0 0 4px; } h3 { font-size:15px; margin:18px 0 8px; }
 const BRAND="__BRAND__";
 const PRODUCTS = __DATA__;
 const DETAIL_BASE="https://dian.ysbang.cn/#/drugInfo?wholesaleid=";
-function detailUrl(w,name){return DETAIL_BASE+w+(name&&name.indexOf("包邮")>=0?"&isAssemble=true&scene=0":"&isAssemble=false&scene=1")+"&trafficType=1";}
+function detailUrl(o){
+  if(o.detailUrl) return o.detailUrl;
+  // 优先用 activitytype 判断：7/8=拼团, 1=普通
+  var isGroup = o.activitytype!=null ? (o.activitytype==7||o.activitytype==8) : (o.name&&o.name.indexOf("包邮")>=0);
+  return DETAIL_BASE+o.wid+(isGroup?"&isAssemble=true&scene=0":"&isAssemble=false&scene=1")+"&trafficType=1";
+}
 function fmt(n){ if(n==null) return "—"; return n>=10000 ? (n/10000).toFixed(1)+"万" : Number(n).toLocaleString(); }
 function tierCls(t){ return t==="源头直供档"?"t1":(t==="主流走量档"?"t2":"t3"); }
 function renderIndex(){
   let rows = PRODUCTS.map(p=>{
     let st = fmt(p.sales) + (p.salesSrc==="列表"?'<span class="src">列表</span>':'');
     let img = p.img ? '<img src="'+p.img+'" onerror="this.style.display=\'none\'">' : '<div class="noimg">无图</div>';
+    let repOffer = p.offers.length ? p.offers[0] : null;
+    let repObj = repOffer ? {wid:repOffer.wid, name:p.name, detailUrl:p.repDetailUrl, activitytype:p.repActivitytype} : {wid:p.repWid, name:p.name, detailUrl:p.repDetailUrl, activitytype:p.repActivitytype};
+    let dlink = '<a class="dlink" href="'+detailUrl(repObj)+'" target="_blank">详情↗</a>';
     return '<tr><td class="rk">'+p.rank+'</td><td class="img">'+img+'</td>'
       +'<td class="name"><a href="#/p/'+p.id+'">'+p.name+'</a><div class="spec">'+p.spec+'</div></td>'
       +'<td class="price">￥'+p.minP+'</td><td>￥'+p.avg+'</td><td>'+p.nSup+' 家</td>'
-      +'<td class="sales">'+st+'</td><td>'+(p.expiry||"—")+'</td></tr>';
+      +'<td class="sales">'+st+'</td><td>'+(p.expiry||"—")+'</td>'
+      +'<td class="wid">'+dlink+'</td></tr>';
   }).join("");
   let totalOffers = PRODUCTS.reduce((a,p)=>a+p.offers.length,0);
   let realOffers = PRODUCTS.reduce((a,p)=>a+p.offers.filter(o=>o.paidUnits!=null).length,0);
@@ -652,7 +685,7 @@ function renderIndex(){
     +'<span class="tier t3">精选优价档</span> 价&gt;Q3（小批量/高服务/长效期）；并叠加销量标签 '
     +'<b>爆款领跑 / 稳健供货 / 长尾备选</b>。<br>'
     +'<b>权威销量 = 商品详情页「已付款件数」</b>（带单位，不同报价单位如盒/瓶不可相加，排名取代表报价单一值）；标「列表」者为搜索列表「已拼」量（仅供参考）。</div>'
-    +'<table><thead><tr><th>排名</th><th>图</th><th>产品（点标题看档位）</th><th>全网最低价</th><th>均价</th><th>供应商数</th><th>销量(权威)</th><th>有效期</th></tr></thead><tbody>'+rows+'</tbody></table>';
+    +'<table><thead><tr><th>排名</th><th>图</th><th>产品（点标题看档位）</th><th>全网最低价</th><th>均价</th><th>供应商数</th><th>销量(权威)</th><th>有效期</th><th>详情链接</th></tr></thead><tbody>'+rows+'</tbody></table>';
 }
 function renderDetail(id){
   let p = PRODUCTS.find(x=>x.id==id);
@@ -691,7 +724,7 @@ function renderDetail(id){
       +'<td class="price">￥'+o.price+'</td><td class="mo">'+mq+'</td><td>'+(o.provider||"—")+'</td>'
       +'<td>'+(o.expiry||"—")+'</td><td class="sales">'+pu+'</td>'
       +'<td>'+(o.stores!=null? o.stores+' 家':"—")+'</td><td>'+(o.records!=null? o.records+' 笔':"—")+'</td>'
-      +'<td class="wid"><a href="'+detailUrl(o.wid,o.name)+'" target="_blank">详情↗</a></td>'
+      +'<td class="wid"><a href="'+detailUrl(o)+'" target="_blank">详情↗</a></td>'
       +'<td class="tiers">'+ot+'</td>'
       +'<td class="metric">'+l7d+'</td>'
       +'<td class="metric large">'+lc+'</td>'
