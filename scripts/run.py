@@ -4,7 +4,7 @@
 用法:
     python run.py --brand 云南白药 --pages 1 --top-n 5
     python run.py --brand 妇炎洁 --pages 3 --top-n 0
-    python run.py --brand 云南白药 --pages 1 --top-n 5 --phone 18975626916 --password Ab123456
+    python run.py --brand 云南白药 --pages 1 --top-n 5 --phone  --password 
 
 特性:
     - 自动检测 Chrome 9222 调试端口
